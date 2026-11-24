@@ -3,219 +3,75 @@ import { createRoot } from 'react-dom/client';
 import { createClient } from '@supabase/supabase-js';
 import './style.css';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
-
-const today = new Date();
-const dateString = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-const pretty = s => new Date(`${s}T12:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-
-function App() {
-  const [session,setSession] = useState(null);
-  const [authReady,setAuthReady] = useState(false);
-  const [authMode,setAuthMode] = useState('login');
-  const [email,setEmail] = useState('');
-  const [password,setPassword] = useState('');
-  const [authMessage,setAuthMessage] = useState('');
-  const [authBusy,setAuthBusy] = useState(false);
-  const [dataLoading,setDataLoading] = useState(false);
-  const [items,setItems] = useState([]);
-  const [cards,setCards] = useState([]);
-  const [view,setView] = useState('Planner');
-  const [showForm,setShowForm] = useState(false);
-  const [name,setName] = useState('');
-  const [due,setDue] = useState(dateString(today));
-  const [difficulty,setDifficulty] = useState('Medium');
-  const [month,setMonth] = useState(new Date(today.getFullYear(),today.getMonth(),1));
-  const [filter,setFilter] = useState('All');
-  const [deck,setDeck] = useState('All');
-  const [showCardForm,setShowCardForm] = useState(false);
-  const [cardSubject,setCardSubject] = useState('');
-  const [question,setQuestion] = useState('');
-  const [answer,setAnswer] = useState('');
-  const [flipped,setFlipped] = useState(false);
-  const [cardIndex,setCardIndex] = useState(0);
-  const [notice,setNotice] = useState('');
-
-  useEffect(() => {
-    if (!supabase) { setAuthReady(true); return; }
-    supabase.auth.getSession().then(({data}) => { setSession(data.session); setAuthReady(true); });
-    const {data:{subscription}} = supabase.auth.onAuthStateChange((_event,nextSession) => {
-      setSession(nextSession);
-    });
-    return () => subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!session || !supabase) { setItems([]); setCards([]); return; }
-    let cancelled = false;
-    async function load() {
-      setDataLoading(true); setNotice('');
-      const [a,c] = await Promise.all([
-        supabase.from('assignments').select('*').order('due',{ascending:true}),
-        supabase.from('flashcards').select('*').order('created_at',{ascending:true})
-      ]);
-      if (cancelled) return;
-      if (a.error || c.error) {
-        setNotice(`Could not load your data: ${(a.error || c.error).message}`);
-      } else {
-        setItems(a.data || []); setCards(c.data || []);
-        // Bring existing browser-only data into this account once, but only when its cloud table is empty.
-        if ((a.data || []).length === 0) {
-          let local = [];
-          try { local = JSON.parse(localStorage.getItem('study-buddy-items') || '[]'); } catch {}
-          if (local.length) {
-            const rows = local.map(x => ({user_id:session.user.id,name:x.name,due:x.due,difficulty:x.difficulty || 'Medium',done:!!x.done}));
-            const inserted = await supabase.from('assignments').insert(rows).select('*');
-            if (!inserted.error && !cancelled) setItems(inserted.data || []);
-          }
-        }
-        if ((c.data || []).length === 0) {
-          let local = [];
-          try { local = JSON.parse(localStorage.getItem('study-buddy-flashcards') || '[]'); } catch {}
-          if (local.length) {
-            const rows = local.map(x => ({user_id:session.user.id,subject:x.subject,question:x.question,answer:x.answer}));
-            const inserted = await supabase.from('flashcards').insert(rows).select('*');
-            if (!inserted.error && !cancelled) setCards(inserted.data || []);
-          }
-        }
-      }
-      if (!cancelled) setDataLoading(false);
-    }
-    load();
-    return () => { cancelled = true; };
-  }, [session?.user?.id]);
-
-  const authenticate = async e => {
-    e.preventDefault(); setAuthMessage('');
-    if (!supabase) return;
-    setAuthBusy(true);
-    const result = authMode === 'signup'
-      ? await supabase.auth.signUp({email:email.trim(),password})
-      : await supabase.auth.signInWithPassword({email:email.trim(),password});
-    setAuthBusy(false);
-    if (result.error) setAuthMessage(result.error.message);
-    else if (authMode === 'signup' && !result.data.session) setAuthMessage('Account created! Check your email for a confirmation link, then come back and log in.');
-    else setAuthMessage('You are signed in!');
-  };
-
-  const logout = async () => { await supabase.auth.signOut(); setItems([]); setCards([]); setAuthMessage(''); };
-  const save = async next => {
-    const previous = items; setItems(next);
-    // Writes are performed by the individual action handlers below.
-    return previous;
-  };
-  const sorted = useMemo(() => [...items].sort((a,b)=>a.due.localeCompare(b.due)),[items]);
-  const active = sorted.filter(x=>!x.done);
-  const add = async e => {
-    e.preventDefault();
-    if (!name.trim() || !due) return;
-    const {data,error} = await supabase.from('assignments').insert({user_id:session.user.id,name:name.trim(),due,difficulty,done:false}).select().single();
-    if (error) { setNotice(error.message); return; }
-    setItems([...items,data]); setName(''); setDue(dateString(today)); setDifficulty('Medium'); setShowForm(false);
-  };
-  const toggle = async id => {
-    const old=items.find(x=>x.id===id); if (!old) return;
-    const {data,error}=await supabase.from('assignments').update({done:!old.done}).eq('id',id).select().single();
-    if(error){setNotice(error.message);return;} setItems(items.map(x=>x.id===id?data:x));
-  };
-  const remove = async id => {
-    const {error}=await supabase.from('assignments').delete().eq('id',id);
-    if(error){setNotice(error.message);return;} setItems(items.filter(x=>x.id!==id));
-  };
-  const addCard = async e => {
-    e.preventDefault();
-    if (!cardSubject.trim() || !question.trim() || !answer.trim()) return;
-    const {data,error}=await supabase.from('flashcards').insert({user_id:session.user.id,subject:cardSubject.trim(),question:question.trim(),answer:answer.trim()}).select().single();
-    if(error){setNotice(error.message);return;}
-    setCards([...cards,data]); setDeck(cardSubject.trim()); setCardIndex(0); setQuestion(''); setAnswer(''); setShowCardForm(false); setFlipped(false);
-  };
-  const removeCard = async id => {
-    const {error}=await supabase.from('flashcards').delete().eq('id',id);
-    if(error){setNotice(error.message);return;}
-    const next=cards.filter(c=>c.id!==id); setCards(next);
-    setCardIndex(Math.max(0,Math.min(cardIndex,next.filter(c=>deck==='All'||c.subject===deck).length-1)));
-    setFlipped(false);
-  };
-  const subjects = [...new Set(cards.map(c=>c.subject))].sort((a,b)=>a.localeCompare(b));
-  const shownCards = cards.filter(c=>deck==='All'||c.subject===deck);
-  const currentCard = shownCards[cardIndex];
-  const days = new Date(month.getFullYear(),month.getMonth()+1,0).getDate();
-  const offset = new Date(month.getFullYear(),month.getMonth(),1).getDay();
-  const monthKey = `${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,'0')}`;
-  const monthItems = sorted.filter(x=>x.due.startsWith(monthKey));
-  const visible = filter==='All'?sorted:sorted.filter(x=>filter==='Active'?!x.done:x.done);
-
-  if (!supabase) return <div className="auth-page"><section className="auth-card"><div className="logo auth-logo">✦</div><h1>Study Buddy setup</h1><p>Add your Supabase settings in Vercel to turn on accounts.</p><p className="auth-help">Required environment variables: <b>VITE_SUPABASE_URL</b> and <b>VITE_SUPABASE_PUBLISHABLE_KEY</b>.</p></section></div>;
-  if (!authReady) return <div className="auth-page"><section className="auth-card">Loading Study Buddy…</section></div>;
-  if (!session) return <div className="auth-page"><form className="auth-card" onSubmit={authenticate}>
-    <div className="logo auth-logo">✦</div><h1>Study Buddy</h1><p>{authMode==='login'?'Welcome back! Log in to see your planner.':'Create an account to save your work.'}</p>
-    <label>Email address<input type="email" required autoComplete="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></label>
-    <label>Password<input type="password" required minLength="6" autoComplete={authMode==='signup'?'new-password':'current-password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 6 characters"/></label>
-    {authMessage&&<div className="auth-message">{authMessage}</div>}
-    <button className="primary auth-submit" disabled={authBusy}>{authBusy?'Please wait…':authMode==='login'?'Log in':'Create account'}</button>
-    <button type="button" className="auth-switch" onClick={()=>{setAuthMode(authMode==='login'?'signup':'login');setAuthMessage('');}}>{authMode==='login'?"Don't have an account? Sign up":"Already have an account? Log in"}</button>
-  </form></div>;
-
-  return <div className="app">
-    <header><div className="brand"><div className="logo">✦</div><div><h1>Study Buddy</h1><p>Your personal homework planner</p></div></div><div className="account"><span>{session.user.email}</span><button onClick={logout}>Log out</button></div></header>
-    {notice&&<div className="notice" role="status">{notice}<button onClick={()=>setNotice('')}>×</button></div>}
-    {dataLoading&&<div className="loading-note">Loading your saved work…</div>}
-    <section className="stats">
-      <div><strong>{active.length}</strong><span>To do</span></div>
-      <div><strong>{items.filter(x=>x.done).length}</strong><span>Completed</span></div>
-      <div><strong>{active.filter(x=>x.due<dateString(today)).length}</strong><span>Overdue</span></div>
-    </section>
-    <nav>
-      <button className={view==='Planner'?'selected':''} onClick={()=>setView('Planner')}>☷ Planner</button>
-      <button className={view==='Calendar'?'selected':''} onClick={()=>setView('Calendar')}>▦ Calendar</button>
-      <button className={view==='Flashcards'?'selected':''} onClick={()=>{setView('Flashcards');setFlipped(false);}}>▤ Flashcards</button>
-    </nav>
-    {view==='Planner' ? <main>
-      <div className="section-head"><div><h2>My assignments</h2><p>Sorted by soonest due date</p></div><select value={filter} onChange={e=>setFilter(e.target.value)}><option>All</option><option>Active</option><option>Completed</option></select></div>
-      {visible.length===0 ? <div className="empty"><div>📚</div><h3>You're all caught up!</h3><p>Add an assignment to start planning your work.</p></div> :
-        <div className="list">{visible.map(x=><article className={`assignment ${x.done?'completed':''}`} key={x.id}>
-          <input aria-label="Mark complete" type="checkbox" checked={x.done} onChange={()=>toggle(x.id)}/>
-          <div className="assignment-info"><h3>{x.name}</h3><p>Due {pretty(x.due)}</p></div>
-          <span className={`difficulty ${(x.difficulty||'Medium').toLowerCase()}`}>{x.difficulty}</span>
-          <button className="delete" title="Delete assignment" onClick={()=>remove(x.id)}>×</button>
-        </article>)}</div>}
-    </main> : view==='Calendar' ? <main>
-      <div className="month-head"><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()-1,1))}>‹</button><h2>{month.toLocaleDateString(undefined,{month:'long',year:'numeric'})}</h2><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()+1,1))}>›</button></div>
-      <div className="calendar">{['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=><b key={d}>{d}</b>)}{Array.from({length:offset},(_,i)=><span key={'blank'+i}/>)}{Array.from({length:days},(_,i)=>{const n=i+1,key=`${monthKey}-${String(n).padStart(2,'0')}`,has=items.some(x=>x.due===key);return <div className={`day ${key===dateString(today)?'today':''}`} key={key}><span>{n}</span>{has&&<i/>}</div>})}</div>
-      <h3 className="month-label">Assignments this month</h3>
-      {monthItems.length?monthItems.map(x=><div className="month-item" key={x.id}><span>{x.name}</span><small>{pretty(x.due)}</small></div>):<p className="muted">No assignments due this month.</p>}
-    </main> : <main className="flashcards-main">
-      <div className="section-head flash-head"><div><h2>My flashcards</h2><p>Practice a little at a time</p></div><button className="primary add-card-button" onClick={()=>setShowCardForm(true)}>＋ Create flashcard</button></div>
-      {cards.length===0 ? <div className="empty"><div>🧠</div><h3>No flashcards yet</h3><p>Create your first card to start studying.</p><button className="primary empty-create" onClick={()=>setShowCardForm(true)}>Create flashcard</button></div> :
-      <>
-        <div className="deck-row"><label htmlFor="deck-select">Subject / deck</label><select id="deck-select" value={deck} onChange={e=>{setDeck(e.target.value);setCardIndex(0);setFlipped(false);}}><option value="All">All subjects</option>{subjects.map(s=><option key={s} value={s}>{s}</option>)}</select><span>{shownCards.length} {shownCards.length===1?'card':'cards'}</span></div>
-        {currentCard ? <div className="study-area">
-          <button className={`flashcard ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(!flipped)} aria-label="Flip flashcard">
-            <span className="card-label">{flipped?'ANSWER':'QUESTION'}</span><strong>{flipped?currentCard.answer:currentCard.question}</strong><small>Click to {flipped?'see question':'reveal answer'}</small>
-          </button>
-          <div className="card-controls"><button className="secondary" onClick={()=>{setCardIndex((cardIndex-1+shownCards.length)%shownCards.length);setFlipped(false);}}>← Previous</button><span>{cardIndex+1} / {shownCards.length}</span><button className="secondary" onClick={()=>{setCardIndex((cardIndex+1)%shownCards.length);setFlipped(false);}}>Next →</button></div>
-          <div className="card-meta"><span>{currentCard.subject}</span><button className="delete-card" onClick={()=>removeCard(currentCard.id)}>Delete this card</button></div>
-        </div> : <div className="empty"><h3>No cards in this subject</h3><p>Choose another subject or create a card.</p></div>}
-      </>}
-    </main>}
-    {view==='Planner' && <button className="fab" onClick={()=>setShowForm(true)} aria-label="Add assignment">＋</button>}
-    {showForm&&<div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setShowForm(false)}}><form className="drawer" onSubmit={add}>
-      <div className="drawer-head"><div><h2>New assignment</h2><p>Add homework to your planner</p></div><button type="button" className="close" onClick={()=>setShowForm(false)}>×</button></div>
-      <label>Homework name<input autoFocus required value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Math worksheet"/></label>
-      <label>Due date<input type="date" required value={due} onChange={e=>setDue(e.target.value)}/></label>
-      <label>Difficulty<select value={difficulty} onChange={e=>setDifficulty(e.target.value)}><option>Easy</option><option>Medium</option><option>Hard</option></select></label>
-      <div className="form-actions"><button type="button" className="cancel" onClick={()=>setShowForm(false)}>Cancel</button><button className="primary" type="submit">Save assignment</button></div>
-    </form></div>}
-    {showCardForm&&<div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)setShowCardForm(false)}}><form className="drawer" onSubmit={addCard}>
-      <div className="drawer-head"><div><h2>New flashcard</h2><p>Add a question and its answer</p></div><button type="button" className="close" onClick={()=>setShowCardForm(false)}>×</button></div>
-      <label>Subject / deck<input autoFocus required value={cardSubject} onChange={e=>setCardSubject(e.target.value)} placeholder="e.g. Biology"/></label>
-      <label>Question (front)<textarea required rows="4" value={question} onChange={e=>setQuestion(e.target.value)} placeholder="Type your question"/></label>
-      <label>Answer (back)<textarea required rows="4" value={answer} onChange={e=>setAnswer(e.target.value)} placeholder="Type the answer"/></label>
-      <div className="form-actions"><button type="button" className="cancel" onClick={()=>setShowCardForm(false)}>Cancel</button><button className="primary" type="submit">Save flashcard</button></div>
-    </form></div>}
-    <footer>Study Buddy · Stay organized, one assignment at a time.</footer>
-  </div>;
+const env = import.meta.env;
+const supabase = env.VITE_SUPABASE_URL && env.VITE_SUPABASE_PUBLISHABLE_KEY
+  ? createClient(env.VITE_SUPABASE_URL, env.VITE_SUPABASE_PUBLISHABLE_KEY) : null;
+const today = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+const load = (k,f) => { try { const v=localStorage.getItem(k); return v===null?f:JSON.parse(v); } catch { return f; } };
+const save = (k,v) => localStorage.setItem(k,JSON.stringify(v));
+const questions = {
+ Math:[['What is 8 × 7?',['54','56','64'],1],['What is 144 ÷ 12?',['10','11','12'],2],['What is 25% of 80?',['15','20','25'],1],['What is 9 squared?',['18','72','81'],2],['What is 3/4 as a decimal?',['0.25','0.5','0.75'],2]],
+ Trivia:[['Which ocean is the largest?',['Atlantic','Pacific','Indian'],1],['How many sides does a hexagon have?',['5','6','8'],1],['Which planet is known as the Red Planet?',['Mars','Venus','Jupiter'],0],['What is the capital of Japan?',['Seoul','Tokyo','Beijing'],1],['How many minutes are in an hour?',['30','60','100'],1]],
+ Spelling:[['Which spelling is correct?',['Necessary','Neccessary','Necesary'],0],['Which spelling is correct?',['Definately','Definitely','Definitly'],1],['Which spelling is correct?',['Separate','Seperate','Seperrate'],0],['Which spelling is correct?',['Beginning','Begining','Begginning'],0],['Which spelling is correct?',['Friend','Freind','Frend'],0]],
+ Science:[['What gas do plants take in?',['Oxygen','Carbon dioxide','Helium'],1],['What is H₂O?',['Salt','Water','Hydrogen'],1],['Which force pulls objects toward Earth?',['Gravity','Friction','Magnetism'],0],['What is the center of an atom called?',['Cell','Nucleus','Orbit'],1],['How many legs does an insect have?',['4','6','8'],1]]
+};
+const bosses=[{name:'Professor Dragon',emoji:'🐉',topic:'Math',intro:'Solve my number riddles!',color:'dragon'},{name:'Slime Scientist',emoji:'🧪',topic:'Science',intro:'Crack my science experiments!',color:'slime'},{name:'Robo-Rex',emoji:'🤖',topic:'Trivia',intro:'Power up your brain with trivia!',color:'robot'},{name:'Queen Bee',emoji:'🐝',topic:'Spelling',intro:'Show me your spelling skills!',color:'bee'}];
+const leagues=[['Rookie',0],['Bronze',100],['Silver',250],['Gold',500],['Platinum',1000],['Diamond',2500],['Legend',5000]];
+const shopItems=[{id:'sky',name:'Sky Blue Theme',price:20,swatch:'#eaf3ff'},{id:'mint',name:'Mint Theme',price:35,swatch:'#e8f8ef'},{id:'sunset',name:'Sunset Theme',price:50,swatch:'#fff0e7'},{id:'star',name:'Starry Theme',price:75,swatch:'#eeeaff'}];
+const msgOf=e=>e?.message||String(e);
+function App(){
+ const [session,setSession]=useState(null),[profile,setProfile]=useState(null),[authMode,setAuthMode]=useState('signin'),[role,setRole]=useState('student'),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[displayName,setDisplayName]=useState(''),[authMsg,setAuthMsg]=useState(''),[authBusy,setAuthBusy]=useState(false);
+ const [items,setItems]=useState(()=>load('sb-items',[])),[cards,setCards]=useState(()=>load('sb-cards',[])),[coins,setCoins]=useState(()=>load('sb-coins',0)),[earned,setEarned]=useState(()=>load('sb-earned',0)),[owned,setOwned]=useState(()=>load('sb-owned',['sky'])),[theme,setTheme]=useState(()=>load('sb-theme','sky')),[hideAfter,setHideAfter]=useState(()=>load('sb-hide-after','7'));
+ const [classes,setClasses]=useState([]),[memberships,setMemberships]=useState([]),[cloudAssignments,setCloudAssignments]=useState([]),[className,setClassName]=useState(''),[classCode,setClassCode]=useState(''),[joinCode,setJoinCode]=useState(''),[assignmentTitle,setAssignmentTitle]=useState(''),[assignmentInstructions,setAssignmentInstructions]=useState(''),[assignmentDue,setAssignmentDue]=useState(today()),[assignmentPriority,setAssignmentPriority]=useState('Medium'),[assignmentClass,setAssignmentClass]=useState(''),[classMsg,setClassMsg]=useState('');
+ const [view,setView]=useState('Planner'),[filter,setFilter]=useState('Active'),[form,setForm]=useState(false),[name,setName]=useState(''),[due,setDue]=useState(today()),[difficulty,setDifficulty]=useState('Medium'),[priority,setPriority]=useState('Medium'),[early,setEarly]=useState(0),[subject,setSubject]=useState('');
+ const [gameType,setGameType]=useState('Math'),[gameQs,setGameQs]=useState([]),[gameIndex,setGameIndex]=useState(0),[gameScore,setGameScore]=useState(0),[gameDone,setGameDone]=useState(false),[gameMsg,setGameMsg]=useState('');
+ const [boss,setBoss]=useState(null),[bossQs,setBossQs]=useState([]),[bossIndex,setBossIndex]=useState(0),[bossHearts,setBossHearts]=useState(3),[bossMsg,setBossMsg]=useState(''),[bossDone,setBossDone]=useState(false);
+ const [minutes,setMinutes]=useState(25),[secondsLeft,setSecondsLeft]=useState(1500),[timerRunning,setTimerRunning]=useState(false),[timerFinished,setTimerFinished]=useState(false);
+ const [cardSubject,setCardSubject]=useState(''),[cardQ,setCardQ]=useState(''),[cardA,setCardA]=useState(''),[showCardForm,setShowCardForm]=useState(false),[cardIndex,setCardIndex]=useState(0),[flipped,setFlipped]=useState(false),[month,setMonth]=useState(new Date());
+ const [loadingCloud,setLoadingCloud]=useState(false);
+ useEffect(()=>{if(!supabase)return;supabase.auth.getSession().then(({data})=>setSession(data.session));const {data:{subscription}}=supabase.auth.onAuthStateChange((_e,s)=>setSession(s));return()=>subscription.unsubscribe();},[]);
+ useEffect(()=>{if(!session){setProfile(null);setClasses([]);setMemberships([]);setCloudAssignments([]);return;} (async()=>{let {data:p}=await supabase.from('profiles').select('*').eq('id',session.user.id).maybeSingle();if(!p){const role0=session.user.user_metadata?.role||'student';const {data:newP}=await supabase.from('profiles').insert({id:session.user.id,display_name:session.user.user_metadata?.display_name||session.user.email,role:role0}).select().single();p=newP;}setProfile(p);})();},[session]);
+ const refreshCloud=async()=>{if(!supabase||!session)return;setLoadingCloud(true);try{const {data:myClasses}=await supabase.from('class_members').select('class_id,classes(id,name,join_code,teacher_id)').eq('student_id',session.user.id);const {data:ownedClasses}=profile?.role==='teacher'?await supabase.from('classes').select('*').eq('teacher_id',session.user.id):{data:[]};const memberships0=myClasses||[];const allClasses=[...(ownedClasses||[]),...memberships0.map(x=>x.classes).filter(Boolean)];const uniq=[...new Map(allClasses.map(x=>[x.id,x])).values()];setClasses(uniq);setMemberships(memberships0);if(uniq.length){const ids=uniq.map(x=>x.id);const {data:as}=await supabase.from('assignments').select('*,classes(name),assignment_completions(student_id,completed_at)').in('class_id',ids).order('due_at');setCloudAssignments(as||[]);}else setCloudAssignments([]);}catch(e){setClassMsg(msgOf(e));}finally{setLoadingCloud(false);}};
+ useEffect(()=>{if(session&&profile)refreshCloud();},[session,profile?.id,profile?.role]);
+ useEffect(()=>save('sb-items',items),[items]);useEffect(()=>save('sb-cards',cards),[cards]);useEffect(()=>save('sb-coins',coins),[coins]);useEffect(()=>save('sb-earned',earned),[earned]);useEffect(()=>save('sb-owned',owned),[owned]);useEffect(()=>save('sb-theme',theme),[theme]);useEffect(()=>save('sb-hide-after',hideAfter),[hideAfter]);
+ useEffect(()=>{if(!timerRunning)return;const id=setInterval(()=>setSecondsLeft(s=>{if(s<=1){clearInterval(id);setTimerRunning(false);setTimerFinished(true);if(minutes>45){setCoins(c=>c+5);setEarned(e=>e+5);}return 0;}return s-1;}),1000);return()=>clearInterval(id);},[timerRunning,minutes]);
+ const award=n=>{setCoins(c=>c+n);setEarned(e=>e+n);};
+ const activeItems=useMemo(()=>items.filter(x=>!x.done||hideAfter==='never'||!x.completedAt||(Date.now()-x.completedAt)<Number(hideAfter)*86400000),[items,hideAfter]);
+ const cloudVisible=cloudAssignments.map(x=>({id:x.id,name:x.title,due:String(x.due_at).slice(0,10),difficulty:x.priority||'Medium',priority:x.priority||'Medium',done:x.my_completed??(x.assignment_completions||[]).some(c=>c.student_id===session.user.id),completionCount:(x.assignment_completions||[]).length,cloud:true,className:x.classes?.name||'Class assignment',teacher_id:x.teacher_id,instructions:x.instructions}));
+ const allItems=[...activeItems,...cloudVisible];const sortDue=x=>{const d=new Date((x.due||today())+'T12:00:00');d.setDate(d.getDate()-Number(x.early||0));return d.toISOString().slice(0,10);};const sorted=[...allItems].sort((a,b)=>sortDue(a).localeCompare(sortDue(b))||({High:0,Medium:1,Low:2}[a.priority]??1)-({High:0,Medium:1,Low:2}[b.priority]??1));
+ const visible=filter==='History'?items.filter(x=>x.done).sort((a,b)=>(b.completedAt||0)-(a.completedAt||0)):sorted.filter(x=>filter==='All'||(filter==='Active'?!x.done:x.done));
+ const currentLeague=[...leagues].reverse().find(x=>earned>=x[1])||leagues[0],nextLeague=leagues.find(x=>earned<x[1]);
+ const addAssignment=e=>{e.preventDefault();if(!name.trim()||!due)return;setItems(a=>[...a,{id:crypto.randomUUID(),name:name.trim(),due,difficulty,priority,early:Number(early),subject,done:false}]);setName('');setSubject('');setForm(false);};
+ const toggleAssignment=async x=>{if(x.cloud){const current=!!x.done;const {error}=await supabase.rpc('set_assignment_completion',{p_assignment_id:x.id,p_completed:!current});if(error){setClassMsg(msgOf(error));return;}setCloudAssignments(a=>a.map(y=>y.id===x.id?{...y,my_completed:!current}:y));return;}const target=items.find(y=>y.id===x.id);if(!target)return;if(!target.done)award(5);setItems(a=>a.map(y=>y.id===x.id?(!y.done?{...y,done:true,completedAt:Date.now()}:{...y,done:false,completedAt:null}):y));};
+ const startGame=()=>{setGameQs(questions[gameType]);setGameIndex(0);setGameScore(0);setGameDone(false);setGameMsg('');};const answerGame=i=>{const score=gameScore+(i===gameQs[gameIndex][2]?1:0);setGameScore(score);if(gameIndex===gameQs.length-1){setGameDone(true);if(score===5){award(10);setGameMsg('Perfect round! You earned 10 coins!');}else setGameMsg(`You got ${score} out of 5. Get all 5 right to earn 10 coins.`);}else setGameIndex(n=>n+1);};
+ const startBoss=b=>{if(coins<5){setBossMsg('You need 5 coins to enter a boss battle.');setBoss(null);return;}setCoins(c=>c-5);setBoss(b);setBossQs(questions[b.topic]);setBossIndex(0);setBossHearts(3);setBossDone(false);setBossMsg('');};const answerBoss=i=>{const hearts=bossHearts-(i===bossQs[bossIndex][2]?0:1);setBossHearts(hearts);if(hearts<=0){setBossDone(true);setBossMsg('The boss wins this round. Your 5-coin entry fee was used.');return;}if(bossIndex===bossQs.length-1){setBossDone(true);award(7);setBossMsg('You won! You earned 7 coins!');}else setBossIndex(n=>n+1);};
+ const startTimer=()=>{setSecondsLeft(minutes*60);setTimerFinished(false);setTimerRunning(true);};const resetTimer=()=>{setTimerRunning(false);setTimerFinished(false);setSecondsLeft(minutes*60);};
+ const addCard=e=>{e.preventDefault();if(!cardSubject.trim()||!cardQ.trim()||!cardA.trim())return;setCards(a=>[...a,{id:crypto.randomUUID(),subject:cardSubject.trim(),q:cardQ.trim(),a:cardA.trim()}]);setCardQ('');setCardA('');setShowCardForm(false);};const currentCard=cards[cardIndex];
+ const buy=it=>{if(owned.includes(it.id)){setTheme(it.id);return;}if(coins<it.price)return;setCoins(c=>c-it.price);setOwned(a=>[...a,it.id]);setTheme(it.id);};
+ const signUp=async e=>{e.preventDefault();if(!supabase){setAuthMsg('Add the Supabase URL and publishable key in Vercel to enable accounts.');return;}setAuthBusy(true);setAuthMsg('');const {data,error}=await supabase.auth.signUp({email,password,options:{data:{role,display_name:displayName||email.split('@')[0]}}});setAuthBusy(false);if(error)setAuthMsg(msgOf(error));else if(!data.session)setAuthMsg('Account created! Check your email to confirm your account, then sign in.');};
+ const signIn=async e=>{e.preventDefault();if(!supabase){setAuthMsg('Supabase is not configured yet. You can use the local planner without an account.');return;}setAuthBusy(true);setAuthMsg('');const {error}=await supabase.auth.signInWithPassword({email,password});setAuthBusy(false);if(error)setAuthMsg(msgOf(error));};
+ const signOut=async()=>{await supabase?.auth.signOut();setSession(null);setProfile(null);};
+ const createClass=async e=>{e.preventDefault();if(!className.trim())return;const code=(Math.random().toString(36).slice(2,8)+Math.random().toString(36).slice(2,4)).toUpperCase();const {error}=await supabase.from('classes').insert({name:className.trim(),join_code:code,teacher_id:session.user.id});if(error)setClassMsg(msgOf(error));else{setClassName('');setClassMsg(`Class created! Join code: ${code}`);refreshCloud();}};
+ const joinClass=async e=>{e.preventDefault();const {data,error}=await supabase.rpc('join_class_by_code',{p_join_code:joinCode.trim().toUpperCase()});if(error)setClassMsg(msgOf(error));else{setClassMsg(`You joined ${data?.class_name||'the class'}!`);setJoinCode('');refreshCloud();}};
+ const postAssignment=async e=>{e.preventDefault();if(!assignmentClass)return;const {error}=await supabase.from('assignments').insert({class_id:assignmentClass,title:assignmentTitle.trim(),instructions:assignmentInstructions,due_at:assignmentDue,priority:assignmentPriority,teacher_id:session.user.id});if(error)setClassMsg(msgOf(error));else{setAssignmentTitle('');setAssignmentInstructions('');setClassMsg('Homework posted!');refreshCloud();}};
+ const timerLabel=`${String(Math.floor(secondsLeft/60)).padStart(2,'0')}:${String(secondsLeft%60).padStart(2,'0')}`;
+ const monthDays=new Date(month.getFullYear(),month.getMonth()+1,0).getDate(),monthOffset=new Date(month.getFullYear(),month.getMonth(),1).getDay();
+ return <div className={`app theme-${theme}`}>
+ <header><div className="brand"><div className="logo">✦</div><div><h1>Study Buddy</h1><p>Learn, level up, and stay organized</p></div></div><div className="header-right"><div className="coin-pill">🪙 {coins} coins</div>{session?<button className="secondary" onClick={signOut}>Sign out</button>:<button className="secondary" onClick={()=>setView('Account')}>Sign in</button>}</div></header>
+ <section className="stats"><div><strong>{items.filter(x=>!x.done).length+cloudVisible.filter(x=>!x.done).length}</strong><span>To do</span></div><div><strong>{items.filter(x=>x.done).length+cloudVisible.filter(x=>x.done).length}</strong><span>Completed</span></div><div><strong>{currentLeague[0]}</strong><span>Your league</span></div></section>
+ <nav>{['Planner','Calendar','Classes','Games','Boss Battles','Timer','Flashcards','Leagues','Shop','Account'].map(v=><button key={v} className={view===v?'selected':''} onClick={()=>setView(v)}>{v}</button>)}</nav>
+ {view==='Planner'&&<main><div className="section-head"><div><h2>My assignments</h2><p>Sorted by due date, priority, and early reminders</p></div><select value={filter} onChange={e=>setFilter(e.target.value)}><option>Active</option><option>All</option><option>Completed</option><option>History</option></select></div><div className="settings-row"><label>Hide completed after <select value={hideAfter} onChange={e=>setHideAfter(e.target.value)}><option value="never">Never</option><option value="1">1 day</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label><small>Completed work remains in History. Cloud assignments are managed by your teacher.</small></div>{visible.length===0?<div className="empty"><div>📚</div><h3>You're all caught up!</h3><p>Add homework or join a class to see assignments here.</p></div>:<div className="list">{visible.map(x=><article className={`assignment ${x.done?'completed':''}`} key={x.id}><input type="checkbox" checked={!!x.done} onChange={()=>toggleAssignment(x)} aria-label="Mark complete"/><div className="assignment-info"><h3>{x.name}</h3><p>Due {new Date(x.due+'T12:00:00').toLocaleDateString()} · {x.cloud?x.className:(x.subject||'Personal homework')}</p>{x.instructions&&<small>{x.instructions}</small>}{x.cloud&&profile?.role==='teacher'&&<small>{x.completionCount||0} student completion(s)</small>}</div><span className={`difficulty ${(x.priority||x.difficulty||'Medium').toLowerCase()}`}>{x.priority||x.difficulty||'Medium'}</span>{!x.cloud&&<button className="delete" onClick={()=>setItems(a=>a.filter(y=>y.id!==x.id))}>×</button>}</article>)}</div>}<button className="primary add-button" onClick={()=>setForm(true)}>＋ Add personal assignment</button></main>}
+ {view==='Calendar'&&<main><div className="month-head"><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()-1,1))}>‹</button><h2>{month.toLocaleDateString(undefined,{month:'long',year:'numeric'})}</h2><button onClick={()=>setMonth(new Date(month.getFullYear(),month.getMonth()+1,1))}>›</button></div><div className="calendar">{['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=><b key={d}>{d}</b>)}{Array.from({length:monthOffset},(_,i)=><span key={'blank'+i}/>)}{Array.from({length:monthDays},(_,i)=>{const n=i+1,key=`${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,'0')}-${String(n).padStart(2,'0')}`;const has=allItems.some(x=>x.due===key);return <div className={`day ${key===today()?'today':''}`} key={key}><span>{n}</span>{has&&<i/>}</div>})}</div><h3 className="month-label">Assignments this month</h3>{allItems.filter(x=>x.due.startsWith(`${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,'0')}`)).sort((a,b)=>a.due.localeCompare(b.due)).map(x=><div className="month-item" key={x.id}><span>{x.name}</span><small>{x.due}</small></div>)}</main>}
+ {view==='Classes'&&<main><h2>My Classes</h2>{!supabase&&<p className="notice">Connect Supabase in your project settings to enable shared classrooms.</p>}{session&&profile?<><p className="muted">Signed in as {profile.display_name} · {profile.role}</p>{profile.role==='teacher'?<><form className="inline-form" onSubmit={createClass}><label>Create a classroom<input required value={className} onChange={e=>setClassName(e.target.value)} placeholder="e.g. 6th Grade Science"/></label><button className="primary">Create class</button></form><h3>Post homework</h3><form className="drawer-form" onSubmit={postAssignment}><label>Class<select required value={assignmentClass} onChange={e=>setAssignmentClass(e.target.value)}><option value="">Choose a class</option>{classes.filter(c=>c.teacher_id===session.user.id).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label><label>Assignment title<input required value={assignmentTitle} onChange={e=>setAssignmentTitle(e.target.value)}/></label><label>Instructions<textarea value={assignmentInstructions} onChange={e=>setAssignmentInstructions(e.target.value)}/></label><label>Due date<input type="date" required value={assignmentDue} onChange={e=>setAssignmentDue(e.target.value)}/></label><label>Priority<select value={assignmentPriority} onChange={e=>setAssignmentPriority(e.target.value)}><option>Low</option><option>Medium</option><option>High</option></select></label><button className="primary">Post homework</button></form></>:<form className="inline-form" onSubmit={joinClass}><label>Join a class with its code<input required value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder="Enter class code"/></label><button className="primary">Join class</button></form>}<h3>Your classrooms</h3>{classes.length===0?<p className="muted">No classes yet.</p>:<div className="list">{classes.map(c=><article className="assignment" key={c.id}><div className="assignment-info"><h3>{c.name}</h3><p>{c.teacher_id===session.user.id?'Your classroom':`Join code used: ${c.join_code||'—'}`}</p></div>{c.teacher_id===session.user.id&&<strong>{c.join_code}</strong>}</article>)}</div>}<button className="secondary" onClick={refreshCloud}>Refresh classes</button>{classMsg&&<p className="notice">{classMsg}</p>}</>:<p className="muted">Sign in or create an account to create or join classrooms.</p>}</main>}
+ {view==='Games'&&<main><h2>Learning Games</h2><p className="muted">Choose a challenge. Get all 5 questions right to earn 10 coins!</p>{!gameQs.length||gameDone?<><div className="game-select">{Object.keys(questions).map(t=><button className={gameType===t?'selected-game':''} key={t} onClick={()=>setGameType(t)}>{t}</button>)}</div>{gameDone&&<div className="result"><h3>{gameMsg}</h3><p>Your score: {gameScore}/5</p></div>}<button className="primary" onClick={startGame}>{gameDone?'Play again':'Start game'}</button></>:<div className="quiz"><div className="progress">Question {gameIndex+1} of 5 · Score {gameScore}</div><h3>{gameQs[gameIndex][0]}</h3><div className="answers">{gameQs[gameIndex][1].map((a,i)=><button key={a} onClick={()=>answerGame(i)}>{a}</button>)}</div></div>}</main>}
+ {view==='Boss Battles'&&<main><h2>Boss Battles</h2><p className="muted">Pay 5 coins to enter. Beat the boss to win 7 coins! You have 3 hearts. Friendly brain challenges only.</p>{!boss?<div className="boss-grid">{bosses.map(b=><div className="boss-card" key={b.name}><div className={`boss-avatar ${b.color}`}>{b.emoji}</div><h3>{b.name}</h3><p>{b.intro}</p><small>Topic: {b.topic}</small><button className="primary" onClick={()=>startBoss(b)}>Battle · 5 🪙</button></div>)}</div>:<div className="battle"><div className={`boss-avatar big ${boss.color}`}>{boss.emoji}</div><h2>{boss.name}</h2><div className="hearts">{'❤️'.repeat(bossHearts)}{'🖤'.repeat(3-bossHearts)}</div>{bossDone?<div className="result"><h3>{bossMsg}</h3><button className="primary" onClick={()=>{setBoss(null);setBossDone(false);}}>Back to bosses</button></div>:<><p className="progress">Challenge {bossIndex+1} of 5</p><h3>{bossQs[bossIndex][0]}</h3><div className="answers">{bossQs[bossIndex][1].map((a,i)=><button key={a} onClick={()=>answerBoss(i)}>{a}</button>)}</div></>}</div>}{bossMsg&&!boss&&<p className="notice">{bossMsg}</p>}</main>}
+ {view==='Timer'&&<main className="timer-main"><h2>Study Timer</h2><p className="muted">Finish a session longer than 45 minutes to earn 5 coins.</p><div className="timer-display">{timerLabel}</div><label className="duration">Session length <input type="number" min="1" max="180" value={minutes} disabled={timerRunning} onChange={e=>{const n=Math.max(1,Math.min(180,Number(e.target.value)||1));setMinutes(n);setSecondsLeft(n*60);setTimerFinished(false);}}/> minutes</label><div className="timer-actions">{!timerRunning?<button className="primary" onClick={startTimer}>{timerFinished?'Start again':'Start timer'}</button>:<button className="secondary" onClick={()=>setTimerRunning(false)}>Pause</button>}<button className="secondary" onClick={resetTimer}>Reset</button></div>{timerFinished&&<div className="result"><h3>{minutes>45?'Session complete! You earned 5 coins!':'Session complete! Great work!'}</h3></div>}</main>}
+ {view==='Flashcards'&&<main><div className="section-head"><div><h2>Flashcards</h2><p>Practice a little at a time</p></div><button className="primary" onClick={()=>setShowCardForm(true)}>＋ Create card</button></div>{!currentCard?<div className="empty"><h3>No flashcards yet</h3><p>Create your first card.</p></div>:<div className="flash-area"><button className={`flashcard ${flipped?'flipped':''}`} onClick={()=>setFlipped(!flipped)}><small>{flipped?'ANSWER':'QUESTION'}</small><strong>{flipped?currentCard.a:currentCard.q}</strong><small>Click to flip</small></button><div className="card-controls"><button className="secondary" onClick={()=>{setCardIndex((cardIndex-1+cards.length)%cards.length);setFlipped(false);}}>← Previous</button><span>{cardIndex+1} / {cards.length}</span><button className="secondary" onClick={()=>{setCardIndex((cardIndex+1)%cards.length);setFlipped(false);}}>Next →</button></div><p className="muted">{currentCard.subject} <button className="link-button" onClick={()=>{setCards(a=>a.filter(x=>x.id!==currentCard.id));setCardIndex(0);}}>Delete card</button></p></div>}</main>}
+ {view==='Leagues'&&<main><h2>Coin Leagues</h2><p className="muted">Your league is based on all coins earned—not coins left to spend.</p><div className="league-current"><div className="trophy">🏆</div><div><small>CURRENT LEAGUE</small><h2>{currentLeague[0]}</h2><p>{earned.toLocaleString()} total coins earned</p></div></div>{nextLeague?<><div className="progress-label"><span>Progress to {nextLeague[0]}</span><b>{earned.toLocaleString()} / {nextLeague[1].toLocaleString()}</b></div><div className="bar"><i style={{width:`${Math.min(100,earned/nextLeague[1]*100)}%`}}/></div></>:<p className="result">You reached the highest league!</p>}<div className="league-list">{leagues.map(([n,v])=><div key={n} className={earned>=v?'unlocked':''}><span>{earned>=v?'🏅':'🔒'} {n}</span><b>{v.toLocaleString()} coins</b></div>)}</div></main>}
+ {view==='Shop'&&<main><h2>Coin Shop</h2><p className="muted">Spend coins on themes. League progress never goes down when you shop.</p><div className="shop-grid">{shopItems.map(it=><div className="shop-card" key={it.id}><div className="swatch" style={{background:it.swatch}}/><h3>{it.name}</h3><p>{owned.includes(it.id)?'Owned':`${it.price} coins`}</p><button className={owned.includes(it.id)?'secondary':'primary'} disabled={!owned.includes(it.id)&&coins<it.price} onClick={()=>buy(it)}>{theme===it.id?'Selected':owned.includes(it.id)?'Use theme':'Buy'}</button></div>)}</div></main>}
+ {view==='Account'&&<main><h2>Accounts</h2>{session?<><p>Signed in as <b>{session.user.email}</b></p><p className="muted">Role: {profile?.role||'Loading profile…'}</p><button className="secondary" onClick={signOut}>Sign out</button><p className="muted">Use Classes to create or join classrooms.</p></>:<><p className="muted">Create a student or teacher account to share homework across devices. Supabase settings are required.</p>{!supabase&&<p className="notice">Supabase is not configured. The planner, games, timer, and flashcards still work locally.</p>}<div className="game-select"><button className={authMode==='signin'?'selected-game':''} onClick={()=>setAuthMode('signin')}>Sign in</button><button className={authMode==='signup'?'selected-game':''} onClick={()=>setAuthMode('signup')}>Create account</button></div><form className="drawer-form" onSubmit={authMode==='signup'?signUp:signIn}>{authMode==='signup'&&<><label>Your name<input value={displayName} onChange={e=>setDisplayName(e.target.value)} required/></label><label>Account type<select value={role} onChange={e=>setRole(e.target.value)}><option value="student">Student</option><option value="teacher">Teacher</option></select></label></>}<label>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>Password<input type="password" minLength="6" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary" disabled={authBusy}>{authBusy?'Please wait…':authMode==='signup'?'Create account':'Sign in'}</button></form>{authMsg&&<p className="notice">{authMsg}</p>}</>}</main>}
+ {form&&<div className="overlay"><form className="drawer" onSubmit={addAssignment}><div className="drawer-head"><h2>New assignment</h2><button type="button" className="close" onClick={()=>setForm(false)}>×</button></div><label>Homework name<input required value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Math worksheet"/></label><label>Class / subject<input value={subject} onChange={e=>setSubject(e.target.value)} placeholder="e.g. Science"/></label><label>Due date<input type="date" required value={due} onChange={e=>setDue(e.target.value)}/></label><label>Difficulty<select value={difficulty} onChange={e=>setDifficulty(e.target.value)}><option>Easy</option><option>Medium</option><option>Hard</option></select></label><label>Priority<select value={priority} onChange={e=>setPriority(e.target.value)}><option>Low</option><option>Medium</option><option>High</option></select></label><label>Show earlier by (days)<input type="number" min="0" max="30" value={early} onChange={e=>setEarly(e.target.value)}/></label><div className="form-actions"><button type="button" className="secondary" onClick={()=>setForm(false)}>Cancel</button><button className="primary">Save assignment</button></div></form></div>}
+ {showCardForm&&<div className="overlay"><form className="drawer" onSubmit={addCard}><div className="drawer-head"><h2>New flashcard</h2><button type="button" className="close" onClick={()=>setShowCardForm(false)}>×</button></div><label>Subject<input required value={cardSubject} onChange={e=>setCardSubject(e.target.value)}/></label><label>Question<textarea required value={cardQ} onChange={e=>setCardQ(e.target.value)}/></label><label>Answer<textarea required value={cardA} onChange={e=>setCardA(e.target.value)}/></label><div className="form-actions"><button type="button" className="secondary" onClick={()=>setShowCardForm(false)}>Cancel</button><button className="primary">Save card</button></div></form></div>}
+ <footer>Study Buddy · Keep learning, keep leveling up! {loadingCloud?'· Syncing…':''}</footer></div>
 }
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<App/>);
