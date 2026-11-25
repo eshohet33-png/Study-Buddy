@@ -10,8 +10,8 @@ This is the combined Study Buddy project: the newest games/boss-battles version 
 - Teachers can create classrooms and share join codes, then post homework with instructions, due dates, and priority.
 - Students can join multiple classes. Homework from every joined class appears together in their planner; each student's completion is tracked separately. Teachers see completion counts.
 - Flashcards.
-- Math, trivia, spelling, and science games; perfect five-question rounds earn 10 coins.
-- Friendly animated boss battles; entry costs 5 coins, victory awards 7 coins, and players have three hearts. No violence or gore.
+- Grade-based Math, trivia, spelling, and science games (Kindergarten through Grade 12); perfect five-question rounds earn 10 coins.
+- Much harder grade-based boss battles: 10 advanced questions, three hearts, a 5-coin entry fee, and a 15-coin victory reward. Boss questions are designed to be more challenging than regular games.
 - Adjustable study timer; a completed session longer than 45 minutes earns 5 coins.
 - Coin leagues based on total coins earned and a theme shop.
 
@@ -27,11 +27,11 @@ The planner, games, flashcards, timer, coins, and themes work locally without Su
 ## Enable accounts and shared classrooms
 
 1. Open your Supabase project.
-2. In **SQL Editor**, run the complete `supabase-setup.sql` file.
+2. In **SQL Editor**, run the complete `supabase-setup.sql` file (it adds the grade column to existing profiles too).
 3. In **Authentication → Providers → Email**, enable Email sign-in. For easier testing you may turn off email confirmation; for a public school app, keep confirmation and set up appropriate guardian/school consent.
 4. Copy `.env.example` to `.env.local` and fill in your Supabase Project URL and **publishable** key. Never put a `service_role` or secret key in this app.
 5. Restart the dev server. For Vercel, add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` under Project → Settings → Environment Variables, then redeploy.
-6. Create a teacher account, create a class, and share its join code with students. Students create student accounts and enter each class code in the Classes tab. A student can join multiple classes.
+6. Create a teacher account, create a class, and share its join code with students. Students create student accounts, choose their grade (Kindergarten through Grade 12), and enter each class code in the Classes tab. The grade can be updated later in Account settings. A student can join multiple classes.
 
 ## Important notes
 
